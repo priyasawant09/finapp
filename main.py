@@ -5,12 +5,13 @@ import math
 import numpy as np
 import pandas as pd
 import io
+import os
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse,StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
-
+from fastapi.middleware.cors import CORSMiddleware
 
 from auth import (
     get_db,
@@ -47,6 +48,47 @@ app = FastAPI(
     description="FastAPI + OAuth2 + SQLite + yfinance",
     version="0.1.0",
 )
+
+SECRET_KEY_ENV = os.getenv("SECRET_KEY")
+if SECRET_KEY_ENV:
+    try:
+        import auth as _auth_mod
+        _auth_mod.SECRET_KEY = SECRET_KEY_ENV
+    except Exception:
+        pass
+
+# ========= CORS Configuration =========
+allowed = os.getenv("ALLOWED_ORIGINS", "")
+ALLOWED_ORIGINS = [o.strip() for o in allowed.split(",") if o.strip()]
+
+allow_all = False
+if not ALLOWED_ORIGINS:
+    if os.getenv("ALLOW_ALL_CORS", "0") == "1":
+        allow_all = True
+    else:
+        ALLOWED_ORIGINS = []
+
+if allow_all:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "https://ivory-hyena-129077.hostingersite.com",
+            "http://ivory-hyena-129077.hostingersite.com"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS or [],  # must be list
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
+PORT = int(os.getenv("PORT", "8000"))
+
 
 # Serve static front-end
 app.mount("/static", StaticFiles(directory="static"), name="static")
