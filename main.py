@@ -4,8 +4,9 @@ from typing import List
 import math
 import numpy as np
 import pandas as pd
+import io
 from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse,StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -54,6 +55,97 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/", include_in_schema=False)
 def root():
     return FileResponse("static/index.html")
+
+
+
+# ========= Helpers =========
+
+def order_statement_rows(df: pd.DataFrame, priorities: list) -> pd.DataFrame:
+    """
+    Reorder df rows according to an ordered list of priority keywords.
+    Each priority matches labels by exact or contains (case-insensitive).
+    Unmatched rows are appended in original order.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    orig_index = [str(i) for i in df.index.tolist()]
+    used = set()
+    ordered_rows = []
+
+    # exact and then contains
+    for p in priorities:
+        p_low = p.lower()
+        # exact match first
+        for idx, lab in enumerate(orig_index):
+            if idx in used:
+                continue
+            if lab.lower() == p_low:
+                ordered_rows.append(lab)
+                used.add(idx)
+                break
+        # contains match next
+        if any(r.lower() == p_low for r in ordered_rows):
+            continue
+        for idx, lab in enumerate(orig_index):
+            if idx in used:
+                continue
+            if p_low in lab.lower():
+                ordered_rows.append(lab)
+                used.add(idx)
+                break
+
+    # append remaining in original order
+    for idx, lab in enumerate(orig_index):
+        if idx not in used:
+            ordered_rows.append(lab)
+            used.add(idx)
+
+    ordered_rows_filtered = [r for r in ordered_rows if r in orig_index]
+    if not ordered_rows_filtered:
+        return df.copy()
+    return df.loc[ordered_rows_filtered]
+
+
+def _norm_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize df: string index/cols, drop fully-empty rows/cols"""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df2 = df.copy()
+    df2.index = df2.index.astype(str)
+    df2.columns = [str(c) for c in df2.columns]
+    # drop columns/rows that are all NA
+    df2 = df2.loc[:, ~df2.isna().all(axis=0)]
+    df2 = df2.loc[~df2.isna().all(axis=1)]
+    return df2
+
+
+# Priority lists: tweak these if you need different labels
+INCOME_PRIORITIES = [
+    "Total Revenue", "Revenue", "Operating Revenue", "Net Revenue",
+    "Cost of Revenue", "Cost of Goods Sold", "Gross Profit",
+    "Operating Expense", "Selling General and Administrative", "SG&A",
+    "Research and Development", "R&D",
+    "EBITDA", "EBIT", "Operating Income", "Operating Profit",
+    "Income Before Tax", "Income Tax Expense", "Net Income",
+    "Net Income Attributable to Parent", "Net Income Common Stockholders",
+    "Normalized Income", "Normalized EBITDA", "Diluted EPS", "Basic EPS",
+]
+
+BALANCE_PRIORITIES = [
+    "Cash", "Cash And Cash Equivalents", "Total Current Assets", "Accounts Receivable",
+    "Inventory", "Total Assets",
+    "Total Current Liabilities", "Accounts Payable", "Total Liabilities",
+    "Long Term Debt", "Total Debt", "Total Stockholder Equity", "Total Equity", "Retained Earnings"
+]
+
+CASH_PRIORITIES = [
+    "Net Cash Provided By Operating Activities", "Operating Cash Flow",
+    "Net Cash Flow From Operating Activities",
+    "Capital Expenditures", "Investing Cash Flow",
+    "Net Cash Provided By Financing Activities", "Free Cash Flow", "Dividends Paid",
+    "Net Change In Cash", "Cash Flow"
+]
 
 
 # ========= AUTH ROUTES =========
@@ -273,3 +365,108 @@ def company_detail(
         cash_flow=to_statement(cf_json),
     )
 
+
+
+@app.get("/companies/{company_id}/download", response_class=StreamingResponse)
+def download_company_excel(
+    company_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    # validate company
+    c = (
+        db.query(Company)
+        .filter(Company.id == company_id, Company.owner_id == current_user.id)
+        .first()
+    )
+    if not c:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # fetch fundamentals
+    fundamentals = fetch_fundamentals(c.ticker)
+    income_df = fundamentals.get("income")
+    balance_df = fundamentals.get("balance")
+    cashflow_df = fundamentals.get("cashflow")
+    info_df = fundamentals.get("info")
+
+    # normalize and order
+    income_df_norm = _norm_df(income_df)
+    balance_df_norm = _norm_df(balance_df)
+    cashflow_df_norm = _norm_df(cashflow_df)
+
+    ordered_income = order_statement_rows(income_df_norm, INCOME_PRIORITIES) if not income_df_norm.empty else pd.DataFrame()
+    ordered_balance = order_statement_rows(balance_df_norm, BALANCE_PRIORITIES) if not balance_df_norm.empty else pd.DataFrame()
+    ordered_cash = order_statement_rows(cashflow_df_norm, CASH_PRIORITIES) if not cashflow_df_norm.empty else pd.DataFrame()
+
+    # build excel
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        workbook = writer.book
+        header_format = workbook.add_format({"bold": True, "bg_color": "#F3F6F9", "border": 1})
+        num_format = workbook.add_format({"num_format": "#,##0.00", "border": 1})
+        int_format = workbook.add_format({"num_format": "#,##0", "border": 1})
+        text_format = workbook.add_format({"border": 1})
+
+        def write_sheet(name: str, df: pd.DataFrame):
+            if df is None or df.empty:
+                pd.DataFrame({"Note": [f"No data available for {name}"]}).to_excel(writer, sheet_name=name, index=False)
+                ws = writer.sheets[name]
+                ws.set_column(0, 0, 60, text_format)
+                return
+            df_to_write = df.copy()
+            df_to_write.insert(0, "__line__", df_to_write.index)
+            df_to_write.to_excel(writer, sheet_name=name, index=False)
+            ws = writer.sheets[name]
+            nrows, ncols = df_to_write.shape
+            for col_idx, col_name in enumerate(df_to_write.columns):
+                ws.write(0, col_idx, col_name, header_format)
+                if col_idx == 0:
+                    ws.set_column(col_idx, col_idx, 36, text_format)
+                else:
+                    series = df_to_write.iloc[:, col_idx]
+                    if pd.api.types.is_numeric_dtype(series) or series.apply(lambda v: isinstance(v, (int, float, np.integer, np.floating))).any():
+                        # choose integer vs float
+                        any_float = any(isinstance(v, float) and (abs(v - int(v)) > 1e-8) for v in series.dropna().tolist()[:50])
+                        ws.set_column(col_idx, col_idx, 18, num_format if any_float else int_format)
+                    else:
+                        ws.set_column(col_idx, col_idx, 24, text_format)
+            try:
+                ws.autofilter(0, 0, nrows, ncols - 1)
+            except Exception:
+                pass
+
+        write_sheet("Income Statement", ordered_income)
+        write_sheet("Balance Sheet", ordered_balance)
+        write_sheet("Cash Flow", ordered_cash)
+
+        # Company Info sheet (best-effort)
+        try:
+            if info_df is not None and not info_df.empty:
+                if (info_df.shape[1] == 1) and (info_df.columns[0] == "value"):
+                    info_pairs = [(str(k), v) for k, v in info_df["value"].to_dict().items()]
+                    info_flat = pd.DataFrame(info_pairs, columns=["Key", "Value"])
+                else:
+                    pairs = []
+                    if isinstance(info_df, pd.DataFrame):
+                        for idx, row in info_df.iterrows():
+                            if hasattr(row, "tolist"):
+                                pairs.append((str(idx), ", ".join([str(x) for x in row.tolist()])))
+                            else:
+                                pairs.append((str(idx), str(row)))
+                    info_flat = pd.DataFrame(pairs, columns=["Key", "Value"])
+                if not info_flat.empty:
+                    info_flat.to_excel(writer, sheet_name="Company Info", index=False)
+                    w = writer.sheets["Company Info"]
+                    w.set_column(0, 0, 30, text_format)
+                    w.set_column(1, 1, 50, text_format)
+        except Exception:
+            pass
+
+    output.seek(0)
+    filename = f"{c.name.replace(' ', '_')}_financials.xlsx"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )

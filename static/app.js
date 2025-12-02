@@ -1,4 +1,6 @@
-// static/app.js
+// Path: static/app.js
+// Overwrite your existing file with this content.
+
 const API_BASE = "";
 
 let token = localStorage.getItem("access_token") || null;
@@ -216,6 +218,7 @@ async function loadDashboard() {
 
   data.companies.forEach((c) => {
     const tr = document.createElement("tr");
+    tr.style.cursor = "pointer";
     tr.onclick = () => loadCompanyDetail(c.id);
 
     function addCell(text) {
@@ -258,6 +261,28 @@ async function loadCompanyDetail(id) {
 
   const wrapper = document.createElement("div");
 
+  const headerRow = document.createElement("div");
+  headerRow.style.display = "flex";
+  headerRow.style.justifyContent = "space-between";
+  headerRow.style.alignItems = "center";
+  headerRow.style.marginBottom = "10px";
+
+  const title = document.createElement("h2");
+  title.textContent = `Company Detail — ${data.info && data.info.longName ? data.info.longName : ""}`;
+  title.style.margin = 0;
+  headerRow.appendChild(title);
+
+  // Download XLSX button in header
+  const downloadBtn = document.createElement("button");
+  downloadBtn.textContent = "Download XLSX";
+  downloadBtn.style.padding = "8px 12px";
+  downloadBtn.style.borderRadius = "6px";
+  downloadBtn.style.cursor = "pointer";
+  downloadBtn.onclick = () => downloadXlsx(id, (data.info && data.info.longName) || (ratios && ratios.name) || "company");
+  headerRow.appendChild(downloadBtn);
+
+  wrapper.appendChild(headerRow);
+
   const ratiosDiv = document.createElement("div");
   ratiosDiv.classList.add("ratios");
 
@@ -265,17 +290,17 @@ async function loadCompanyDetail(id) {
     ["Price", ratios.price],
     ["Revenue (last FY)", ratios.revenue],
     ["Net Income (last FY)", ratios.net_income],
-    ["Net Margin", formatPct(ratios.net_margin)],
-    ["ROE", formatPct(ratios.roe)],
-    ["Debt/Equity", formatNumber(ratios.debt_to_equity, 2)],
-    ["Current Ratio", formatNumber(ratios.current_ratio, 2)],
-    ["1Y Return", formatPct(ratios.one_year_return)],
+    ["Net Margin", ratios.net_margin],
+    ["ROE", ratios.roe],
+    ["Debt/Equity", ratios.debt_to_equity],
+    ["Current Ratio", ratios.current_ratio],
+    ["1Y Return", ratios.one_year_return],
   ];
 
   const ul = document.createElement("ul");
   ratioList.forEach(([label, value]) => {
     const li = document.createElement("li");
-    li.innerHTML = `<strong>${label}:</strong> ${typeof value === "string" ? value : formatNumber(value)}`;
+    li.innerHTML = `<strong>${label}:</strong> ${value === null || value === undefined ? "-" : (label.includes("Margin") || label === "1Y Return" ? formatPct(value) : formatNumber(value))}`;
     ul.appendChild(li);
   });
   ratiosDiv.appendChild(ul);
@@ -286,9 +311,24 @@ async function loadCompanyDetail(id) {
   function buildStatementBlock(title, st) {
     const block = document.createElement("div");
     block.classList.add("statement-block");
+    block.style.marginTop = "18px";
+
+    const header = document.createElement("div");
+    header.style.display = "flex";
+    header.style.justifyContent = "space-between";
+    header.style.alignItems = "center";
+
     const h = document.createElement("h3");
     h.textContent = title;
-    block.appendChild(h);
+    header.appendChild(h);
+
+    // Add small download-per-sheet (optional) disabled for now
+    // const smallBtn = document.createElement("button");
+    // smallBtn.textContent = "Download sheet";
+    // smallBtn.onclick = () => alert("Sheet download not implemented separately.");
+    // header.appendChild(smallBtn);
+
+    block.appendChild(header);
 
     if (!st) {
       const p = document.createElement("p");
@@ -299,16 +339,19 @@ async function loadCompanyDetail(id) {
 
     const table = document.createElement("table");
     table.classList.add("data-table");
-    const header = document.createElement("tr");
+    table.style.width = "100%";
+    table.style.borderCollapse = "collapse";
+
+    const headerRow = document.createElement("tr");
     const emptyTh = document.createElement("th");
     emptyTh.textContent = "";
-    header.appendChild(emptyTh);
+    headerRow.appendChild(emptyTh);
     st.columns.forEach((c) => {
       const th = document.createElement("th");
       th.textContent = c;
-      header.appendChild(th);
+      headerRow.appendChild(th);
     });
-    table.appendChild(header);
+    table.appendChild(headerRow);
 
     st.index.forEach((idx, i) => {
       const row = document.createElement("tr");
@@ -333,6 +376,35 @@ async function loadCompanyDetail(id) {
 
   container.innerHTML = "";
   container.appendChild(wrapper);
+}
+
+// ---------- Download Report ----------
+async function downloadXlsx(companyId, companyName){
+  if (!token) { alert("You must be logged in to download."); return; }
+  try {
+    const res = await fetch(`/companies/${companyId}/download`, {
+      headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      alert("Download failed: " + (txt || res.statusText));
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const safeName = (companyName || "company").replace(/\s+/g, '_').replace(/[^\w\-_.]/g, '');
+    a.download = `${safeName}_financials.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    alert("Download started");
+  } catch(err){
+    console.error(err);
+    alert("Download error");
+  }
 }
 
 // ---------- Helpers ----------
