@@ -59,33 +59,30 @@ if SECRET_KEY_ENV:
 
 # ========= CORS Configuration =========
 allowed = os.getenv("ALLOWED_ORIGINS", "")
-ALLOWED_ORIGINS = [o.strip() for o in allowed.split(",") if o.strip()]
+ALLOWED_ORIGINS = [
+    o.strip().rstrip("/") for o in (allowed.split(",") if allowed else [])
+    if o and o.strip()
+]
 
-allow_all = False
-if not ALLOWED_ORIGINS:
-    if os.getenv("ALLOW_ALL_CORS", "0") == "1":
-        allow_all = True
-    else:
-        ALLOWED_ORIGINS = []
+allow_all = os.getenv("ALLOW_ALL_CORS", "0") == "1"
 
 if allow_all:
+    origins = ["*"]
+else:
+    origins = ALLOWED_ORIGINS
+
+if allow_all or origins:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "https://ivory-hyena-129077.hostingersite.com",
-            "http://ivory-hyena-129077.hostingersite.com"],
-        allow_credentials=True,
+        allow_origins=origins,
+        allow_credentials=True,   # required for Authorization header / cookies when using explicit origins
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # useful log for Render logs
+    print("CORS enabled. allow_all:", allow_all, "origins:", origins)
 else:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=ALLOWED_ORIGINS or [],  # must be list
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
-    )
+    print("CORS not enabled: no ALLOWED_ORIGINS and ALLOW_ALL_CORS != 1")
 
 PORT = int(os.getenv("PORT", "8000"))
 
