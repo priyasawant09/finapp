@@ -14,18 +14,19 @@ from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
 from dotenv import load_dotenv
-from config  import API_KEY_GEMINI
 
 # Configure Gemini API
 load_dotenv()  # Load environment variables from .env file
-my_key = os.getenv(API_KEY_GEMINI)
-GEMINI_API_KEY = API_KEY_GEMINI
-print("GEMINI_API_KEY:", GEMINI_API_KEY)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+print("GEMINI_API_KEY loaded:", bool(GEMINI_API_KEY))
+
+# Configure Gemini
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 else:
-    gemini_model = None  # we'll handle missing key gracefully
+    gemini_model = None
+    print("WARNING: GEMINI_API_KEY not set. Gemini features disabled.")
 
 def generate_gemini_text(prompt: str, max_words: int) -> str:
     """
