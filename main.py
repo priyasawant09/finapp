@@ -12,6 +12,40 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
+import google.generativeai as genai
+from dotenv import load_dotenv
+from config  import API_KEY_GEMINI
+
+# Configure Gemini API
+load_dotenv()  # Load environment variables from .env file
+my_key = os.getenv(API_KEY_GEMINI)
+GEMINI_API_KEY = API_KEY_GEMINI
+print("GEMINI_API_KEY:", GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel("gemini-2.5-flash")
+else:
+    gemini_model = None  # we'll handle missing key gracefully
+
+def generate_gemini_text(prompt: str, max_words: int) -> str:
+    """
+    Use Gemini to generate text with an explicit word limit.
+    If Gemini is not configured, return a fallback message.
+    """
+    if gemini_model is None:
+        return "[Gemini API key not configured. Please set GEMINI_API_KEY.]"
+
+    try:
+        response = gemini_model.generate_content(prompt)
+        text = (response.text or "").strip()
+    except Exception as e:
+        return f"[Gemini error: {e}]"
+
+    # Hard word cap
+    words = text.split()
+    if len(words) > max_words:
+        text = " ".join(words[:max_words])
+    return text
 
 from auth import (
     get_db,
@@ -311,7 +345,94 @@ def get_dashboard(
         )
 
     return DashboardResponse(companies=metrics_list)
+@app.get("/analytics/sector")
+def sector_analytics(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    # Reuse the dashboard metrics
+    companies = db.query(Company).filter(Company.owner_id == current_user.id).all()
+    if not companies:
+        return {"text": "No companies added yet. Please add logistics companies to view sector analysis."}
 
+    # Build a compact summary of the metrics for Gemini
+    from schemas import CompanyMetrics  # if not already imported
+    metrics_list = []
+
+    for c in companies:
+        price_hist = fetch_price_history(c.ticker, period="5y")
+        fundamentals = fetch_fundamentals(c.ticker)
+        ratios = compute_ratios(
+            income=fundamentals["income"],
+            balance=fundamentals["balance"],
+            cashflow=fundamentals["cashflow"],
+            price_hist=price_hist,
+        )
+        metrics_list.append(
+            {
+                "name": c.name,
+                "ticker": c.ticker,
+                "segment": c.segment,
+                "revenue": ratios.get("revenue"),
+                "net_income": ratios.get("net_income"),
+                "net_margin": ratios.get("net_margin"),
+                "roe": ratios.get("roe"),
+                "debt_to_equity": ratios.get("debt_to_equity"),
+                "current_ratio": ratios.get("current_ratio"),
+                "one_year_return": ratios.get("one_year_return"),
+            }
+        )
+
+    # Build prompt for Gemini
+    prompt = (
+        "You are a financial analyst specialising in logistics, ports and warehousing.\n"
+        "You are given a portfolio of listed companies with some key metrics.\n"
+        "Provide a concise sector-level commentary in at most 150 words.\n"
+        "Highlight broad themes: beta ( calcuate or research), risk adjusted portfolio returns, growth/profitability, leverage, liquidity and recent price momentum.\n"
+        "Avoid any investment recommendation language like 'buy/sell/hold'.\n\n"
+        f"Metrics JSON:\n{metrics_list}\n\n"
+        "Now write the 150-word commentary:"
+    )
+
+    text = generate_gemini_text(prompt, max_words=150)
+    return {"text": text}
+@app.get("/analytics/company/{company_id}")
+def company_analytics(
+    company_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    c = (
+        db.query(Company)
+        .filter(Company.id == company_id, Company.owner_id == current_user.id)
+        .first()
+    )
+    if not c:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    price_hist = fetch_price_history(c.ticker, period="5y")
+    fundamentals = fetch_fundamentals(c.ticker)
+    ratios = compute_ratios(
+        income=fundamentals["income"],
+        balance=fundamentals["balance"],
+        cashflow=fundamentals["cashflow"],
+        price_hist=price_hist,
+    )
+
+    prompt = (
+        "You are a financial analyst specialising in logistics, ports and warehousing.\n"
+        "Provide a focused company-level commentary with brief backgorund on the business it does (max 150 words).\n"
+        "Comment briefly on size (revenue), profitability, leverage, liquidity and recent price performance.\n"
+        "Avoid the words 'buy', 'sell', 'hold', 'recommend', 'target price'.\n\n"
+        f"Company name: {c.name}\n"
+        f"Ticker: {c.ticker}\n"
+        f"Segment: {c.segment}\n"
+        f"Ratios JSON: {ratios}\n\n"
+        "Now write the 100-word commentary:"
+    )
+
+    text = generate_gemini_text(prompt, max_words=100)
+    return {"text": text}
 
 @app.get("/companies/{company_id}/detail", response_model=CompanyDetailResponse)
 @app.get("/companies/{company_id}/detail", response_model=CompanyDetailResponse)
