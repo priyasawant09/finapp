@@ -106,7 +106,10 @@ document.getElementById("btn-logout").onclick = () => {
 // ---------- Load companies & dashboard ----------
 async function loadCompaniesAndDashboard() {
   await Promise.all([loadCompanies(), loadDashboard()]);
+  // auto-refresh sector analytics after data changes
+  loadSectorAnalytics();
 }
+
 
 async function loadCompanies() {
   const res = await apiFetch("/companies");
@@ -248,6 +251,9 @@ async function loadDashboard() {
 
 // ---------- Detail view ----------
 async function loadCompanyDetail(id) {
+  // Request analytics in background (non-blocking)
+  loadCompanyAnalytics(id).catch(() => {});
+
   const container = document.getElementById("detail-content");
   container.innerHTML = "Loading detail...";
 
@@ -262,6 +268,7 @@ async function loadCompanyDetail(id) {
 
   const wrapper = document.createElement("div");
 
+  // Header row with title and download button
   const headerRow = document.createElement("div");
   headerRow.style.display = "flex";
   headerRow.style.justifyContent = "space-between";
@@ -269,7 +276,7 @@ async function loadCompanyDetail(id) {
   headerRow.style.marginBottom = "10px";
 
   const title = document.createElement("h2");
-  title.textContent = `Company Detail — ${data.info && data.info.longName ? data.info.longName : ""}`;
+  title.textContent = `Company Detail — ${info && info.longName ? info.longName : (ratios && ratios.name ? ratios.name : "")}`;
   title.style.margin = 0;
   headerRow.appendChild(title);
 
@@ -279,34 +286,58 @@ async function loadCompanyDetail(id) {
   downloadBtn.style.padding = "8px 12px";
   downloadBtn.style.borderRadius = "6px";
   downloadBtn.style.cursor = "pointer";
-  downloadBtn.onclick = () => downloadXlsx(id, (data.info && data.info.longName) || (ratios && ratios.name) || "company");
+  downloadBtn.onclick = () => downloadXlsx(id, (info && info.longName) || (ratios && ratios.name) || "company");
   headerRow.appendChild(downloadBtn);
 
   wrapper.appendChild(headerRow);
 
+  // Ratios block (single declaration)
   const ratiosDiv = document.createElement("div");
   ratiosDiv.classList.add("ratios");
 
   const ratioList = [
-    ["Price", ratios.price],
-    ["Revenue (last FY)", ratios.revenue],
-    ["Net Income (last FY)", ratios.net_income],
-    ["Net Margin", ratios.net_margin],
-    ["ROE", ratios.roe],
-    ["Debt/Equity", ratios.debt_to_equity],
-    ["Current Ratio", ratios.current_ratio],
-    ["1Y Return", ratios.one_year_return],
+    ["Price", ratios ? ratios.price : null],
+    ["Revenue (last FY)", ratios ? ratios.revenue : null],
+    ["Net Income (last FY)", ratios ? ratios.net_income : null],
+    ["Net Margin", ratios ? ratios.net_margin : null],
+    ["ROE", ratios ? ratios.roe : null],
+    ["Debt/Equity", ratios ? ratios.debt_to_equity : null],
+    ["Current Ratio", ratios ? ratios.current_ratio : null],
+    ["1Y Return", ratios ? ratios.one_year_return : null],
   ];
 
   const ul = document.createElement("ul");
   ratioList.forEach(([label, value]) => {
     const li = document.createElement("li");
-    li.innerHTML = `<strong>${label}:</strong> ${value === null || value === undefined ? "-" : (label.includes("Margin") || label === "1Y Return" ? formatPct(value) : formatNumber(value))}`;
+    const display = (value === null || value === undefined) ? "-" : (label.includes("Margin") || label === "1Y Return" ? formatPct(value) : formatNumber(value));
+    li.innerHTML = `<strong>${label}:</strong> ${display}`;
     ul.appendChild(li);
   });
   ratiosDiv.appendChild(ul);
-
   wrapper.appendChild(ratiosDiv);
+
+
+  // ---------- Sector Analytics ----------
+    async function loadSectorAnalytics() {
+  const container = document.getElementById("sector-analytics-text");
+  if (!container) return;
+
+  container.textContent = "Generating sector insights (via Gemini)...";
+
+  const res = await apiFetch("/analytics/sector");
+  if (!res.ok) {
+    container.textContent = "Error generating sector insights.";
+    return;
+  }
+
+  const data = await res.json();
+  container.textContent = data.text || "No analysis generated.";
+  }
+  const btnSector = document.getElementById("btn-refresh-sector-analytics");
+  if (btnSector) {
+      btnSector.onclick = () => loadSectorAnalytics();
+      
+  }
 
   // Statements
   function buildStatementBlock(title, st) {
@@ -380,48 +411,45 @@ async function loadCompanyDetail(id) {
 }
 
 // ---------- Download Report ----------
-async function downloadXlsx(companyId, companyName) {
+async function downloadXlsx(companyId, companyName){
   if (!token) { alert("You must be logged in to download."); return; }
-
   try {
-    // Build full URL using API_BASE (meta or forced)
-    const base = (typeof API_BASE === "string" && API_BASE.length) ? API_BASE.replace(/\/$/, "") : "";
-    const url = base ? `${base}/companies/${companyId}/download` : `/companies/${companyId}/download`;
 
-    console.log("Download request URL:", url);
+    const url = API_BASE + `/companies/${companyId}/download`;
+    console.log("Download URL:", url);
 
     const res = await fetch(url, {
       method: "GET",
-      headers: { "Authorization": "Bearer " + token }
+      headers: { Authorization: "Bearer " + token }
     });
 
     if (!res.ok) {
-      // Try to show a short debug snippet of the response (HTML or JSON)
-      const txt = await res.text().catch(() => "");
-      const snippet = txt ? (txt.slice(0, 1024) + (txt.length > 1024 ? "\n... (truncated)":"")) : res.statusText;
-      alert("Download failed: " + snippet + ` (status ${res.status})`);
-      console.error("Download failed response:", txt);
+      const txt = await res.text();
+      alert("Download failed: " + (txt || res.statusText));
       return;
     }
 
-    // If OK, get blob and download
     const blob = await res.blob();
-    const blobType = blob.type || "application/octet-stream";
-    console.log("Download succeeded, blob type:", blobType, "size:", blob.size);
+    const downloadUrl = URL.createObjectURL(blob);
 
-    const fileUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = fileUrl;
-    const safeName = (companyName || "company").replace(/\s+/g, '_').replace(/[^\w\-_.]/g, '');
+    a.href = downloadUrl;
+
+    const safeName = (companyName || "company")
+      .replace(/\s+/g, "_")
+      .replace(/[^\w\-_.]/g, "");
+
     a.download = `${safeName}_financials.xlsx`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(fileUrl);
+
+    URL.revokeObjectURL(downloadUrl);
     alert("Download started");
+
   } catch (err) {
-    console.error("Download error:", err);
-    alert("Download error (see console).");
+    console.error(err);
+    alert("Download error");
   }
 }
 
@@ -435,6 +463,21 @@ function formatNumber(x, decimals = 0) {
   return num.toFixed(decimals);
 }
 
+async function loadCompanyAnalytics(id) {
+  const container = document.getElementById("company-analytics-text");
+  if (!container) return;
+
+  container.textContent = "Generating company insights (via Gemini)...";
+
+  const res = await apiFetch(`/analytics/company/${id}`);
+  if (!res.ok) {
+    container.textContent = "Error generating company insights.";
+    return;
+  }
+
+  const data = await res.json();
+  container.textContent = data.text || "No analysis generated.";
+}
 function formatPct(x) {
   if (x === null || x === undefined || isNaN(x)) return "-";
   return (Number(x) * 100).toFixed(1) + "%";
