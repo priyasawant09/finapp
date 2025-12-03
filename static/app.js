@@ -1,7 +1,8 @@
 // Path: static/app.js
 // Overwrite your existing file with this content.
 
-const API_BASE = "";
+const metaApi = document.querySelector('meta[name="api-base"]');
+const API_BASE = (metaApi && metaApi.content) ? metaApi.content.replace(/\/$/, "") : "";
 
 let token = localStorage.getItem("access_token") || null;
 let currentUsername = localStorage.getItem("username") || null;
@@ -379,31 +380,48 @@ async function loadCompanyDetail(id) {
 }
 
 // ---------- Download Report ----------
-async function downloadXlsx(companyId, companyName){
+async function downloadXlsx(companyId, companyName) {
   if (!token) { alert("You must be logged in to download."); return; }
+
   try {
-    const res = await fetch(`/companies/${companyId}/download`, {
-      headers: { Authorization: 'Bearer ' + token }
+    // Build full URL using API_BASE (meta or forced)
+    const base = (typeof API_BASE === "string" && API_BASE.length) ? API_BASE.replace(/\/$/, "") : "";
+    const url = base ? `${base}/companies/${companyId}/download` : `/companies/${companyId}/download`;
+
+    console.log("Download request URL:", url);
+
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { "Authorization": "Bearer " + token }
     });
+
     if (!res.ok) {
-      const txt = await res.text();
-      alert("Download failed: " + (txt || res.statusText));
+      // Try to show a short debug snippet of the response (HTML or JSON)
+      const txt = await res.text().catch(() => "");
+      const snippet = txt ? (txt.slice(0, 1024) + (txt.length > 1024 ? "\n... (truncated)":"")) : res.statusText;
+      alert("Download failed: " + snippet + ` (status ${res.status})`);
+      console.error("Download failed response:", txt);
       return;
     }
+
+    // If OK, get blob and download
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
+    const blobType = blob.type || "application/octet-stream";
+    console.log("Download succeeded, blob type:", blobType, "size:", blob.size);
+
+    const fileUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = fileUrl;
     const safeName = (companyName || "company").replace(/\s+/g, '_').replace(/[^\w\-_.]/g, '');
     a.download = `${safeName}_financials.xlsx`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(fileUrl);
     alert("Download started");
-  } catch(err){
-    console.error(err);
-    alert("Download error");
+  } catch (err) {
+    console.error("Download error:", err);
+    alert("Download error (see console).");
   }
 }
 

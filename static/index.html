@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <div id="app">
+   <div id="app">
     <h1>📊 Logistics & Infrastructure – Financial Dashboard</h1>
 
     <div id="auth-section">
@@ -55,11 +55,37 @@
           <div id="dashboard-table"></div>
         </div>
       </div>
+            <div class="layout">
+        <div class="card" id="company-admin">
+          ...
+        </div>
+
+        <div class="card" id="dashboard">
+          ...
+        </div>
+      </div>
+
+      <!-- NEW: Sector analytics card -->
+      <div class="card" id="sector-analytics">
+        <h2>Sector Insights</h2>
+        <button id="btn-refresh-sector-analytics">Refresh Insights</button>
+        <div id="sector-analytics-text">
+          Add companies and click "Refresh Insights" to generate sector analytics.
+        </div>
+      </div>
 
       <div class="card" id="company-detail">
+        <div id="company-analytics">
+          <h3>Company Insights</h3>
+          <div id="company-analytics-text">Click on a company row to view analysis.</div>
+        </div>
         <h2>Company Detail</h2>
         <div id="detail-content">Select a company in the dashboard to view detail.</div>
+        <!-- NEW: company-specific analytics -->
+        
       </div>
+
+     
     </div>
   </div>
 
